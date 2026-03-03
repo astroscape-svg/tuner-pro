@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Chord Analyzer</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #1a1a1a; color: #fff; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; }
+        .chord-display { font-size: 5rem; font-weight: bold; margin: 40px 0; color: #00ffcc; text-shadow: 0 0 20px rgba(0,255,204,0.5); }
+        .notes-detected { font-size: 1.2rem; color: #aaa; margin-bottom: 20px; height: 1.5em; }
+        canvas { background: #000; border-radius: 8px; width: 100%; max-width: 600px; height: 150px; }
+        button { padding: 20px 40px; font-size: 1.2rem; cursor: pointer; border: none; background: #007aff; color: white; border-radius: 50px; transition: 0.3s; }
+        button:active { transform: scale(0.95); }
+        .status { margin-top: 10px; font-size: 0.8rem; color: #666; }
+    </style>
+</head>
+<body>
+
+    <div class="chord-display" id="chord-name">---</div>
+    <div class="notes-detected" id="notes-list">検出待ち...</div>
+    
+    <canvas id="spec-canvas"></canvas>
+    
+    <div style="margin-top: 30px;">
+        <button id="startButton">解析を開始する</button>
+    </div>
+    <p class="status">※iPhoneの場合は消音モードを解除してください</p>
+
+    <script>
+        const chordDisplay = document.getElementById('chord-name');
+        const notesList = document.getElementById('notes-list');
+        const canvas = document.getElementById('spec-canvas');
+        const ctx = canvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+
+        let audioCtx, analyser, dataArray;
+        const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+        // コード判定用パターン (簡略版: Major と Minor)
+        const chordPatterns = [
+            { name: "Major", intervals: [0, 4, 7] },
+            { name: "Minor", intervals: [0, 3, 7] },
+            { name: "Maj7", intervals: [0, 4, 7, 11] },
+            { name: "7", intervals: [0, 4, 7, 10] },
+            { name: "m7", intervals: [0, 3, 7, 10] }
+        ];
+
+        startButton.onclick = async () => {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const source = audioCtx.createMediaStreamSource(stream);
+                
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 8192; // 解像度を高める
+                source.connect(analyser);
+                
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                startButton.style.display = 'none';
+                analyze();
+            }
+        };
+
+        function analyze() {
+            requestAnimationFrame(analyze);
+            analyser.getByteFrequencyData(dataArray);
+
+            // 1. クロマグラム（12半音ごとの強度）の計算
+            let chroma = new Float32Array(12).fill(0);
+            const sampleRate = audioCtx.sampleRate;
+            const binCount = analyser.frequencyBinCount;
+
+            for (let i = 0; i < binCount; i++) {
+                const freq = i * sampleRate / (analyser.fftSize);
+                if (freq > 80 && freq < 2000) { // 音楽的な主要帯域
+                    const noteNum = 12 * (Math.log2(freq / 440)) + 69;
+                    const bin = Math.round(noteNum) % 12;
+                    if (bin >= 0) chroma[bin] += dataArray[i];
+                }
+            }
+
+            // 2. 強い音トップ3〜4を特定
+            let indexedChroma = Array.from(chroma).map((val, i) => ({ val, i }));
+            indexedChroma.sort((a, b) => b.val - a.val);
+            
+            const threshold = indexedChroma[0].val * 0.6; // 最大音の60%以上を有効音とする
+            const activeNotes = indexedChroma.filter(n => n.val > threshold && n.val > 50).map(n => n.i);
+            
+            notesList.textContent = activeNotes.map(n => noteNames[n]).join(", ");
+
+            // 3. コード判定ロジック
+            let detectedChord = "---";
+            if (activeNotes.length >= 3) {
+                detectedChord = identifyChord(activeNotes);
+            }
+            chordDisplay.textContent = detectedChord;
+
+            drawSpectrum();
+        }
+
+        function identifyChord(notes) {
+            notes.sort((a, b) => a - b);
+            
+            for (let root of notes) {
+                // 各ノートをRootとして相対インターバルを計算
+                const relativeIntervals = notes.map(n => (n - root + 12) % 12);
+                
+                for (let pattern of chordPatterns) {
+                    const match = pattern.intervals.every(i => relativeIntervals.includes(i));
+                    if (match) {
+                        return noteNames[root] + " " + pattern.name;
+                    }
+                }
+            }
+            return "Searching...";
+        }
+
+        function drawSpectrum() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const barWidth = (canvas.width / 128);
+            for (let i = 0; i < 128; i++) {
+                const barHeight = dataArray[i * 4] / 2;
+                ctx.fillStyle = `hsl(${i * 2}, 100%, 50%)`;
+                ctx.fillRect(i * barWidth, canvas.height - barHeight, barWidth - 1, barHeight);
+            }
+        }
+    </script>
+</body>
+</html>
